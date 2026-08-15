@@ -154,6 +154,7 @@
           '<div>' +
             '<div class="profile-name">' + escapeHtml(data.person.displayName || data.email) + '</div>' +
             '<div class="profile-meta">' + escapeHtml([data.person.position, data.person.employeeGroup].filter(Boolean).join(' • ')) + '</div>' +
+            (data.role === 'ADMIN' || data.role === 'SUPER_ADMIN' ? '<a class="admin-link" href="admin.html">หน้าผู้ดูแลระบบ</a> &middot; ' : '') +
             '<button class="signout-link" id="signoutBtn">ออกจากระบบ</button>' +
           '</div>' +
         '</div>' +
