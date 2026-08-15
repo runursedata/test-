@@ -3,6 +3,7 @@
   var boot = null; // { email, role, persons, leaveTypes, defaultFiscalYear }
   var selectedPersonCode = null;
   var selectedFiscalYear = null;
+  var bulkRowSeq = 0;
 
   document.addEventListener('DOMContentLoaded', init);
 
@@ -137,6 +138,8 @@
             '<select id="yearSelect">' + yearOptions + '</select></div>' +
         '</div>' +
       '</div>' +
+      renderBulkGridCard() +
+      renderRolloverCard() +
       '<div id="personSections"></div>';
 
     document.getElementById('signoutBtn').addEventListener('click', signOut);
@@ -148,6 +151,9 @@
       selectedFiscalYear = Number(this.value);
       onPersonOrYearChange();
     });
+
+    bindBulkGrid();
+    bindRolloverForm();
   }
 
   function onPersonOrYearChange() {
@@ -174,6 +180,301 @@
     bindAddEntryForm();
     refreshEntries();
     refreshBalances();
+  }
+
+  // ---------------------------------------------------------------
+  // นำเข้ารายการลาย้อนหลัง แบบตาราง (คล้าย Google Sheet) — สำหรับกรอกเร็วหลายรายการ
+  // กรอก: บุคลากร / ประเภทลา / จำนวนวัน / วันเริ่มต้น → วันสิ้นสุดคำนวณอัตโนมัติ
+  // (นับทุกวันตามปฏิทินเป็นวันเต็ม 1 วัน/แถว — ถ้าต้องการครึ่งวัน ใช้ฟอร์มด้านบนแทน)
+  // ---------------------------------------------------------------
+
+  function renderBulkGridCard() {
+    return (
+      '<div class="card">' +
+        '<h2>นำเข้ารายการลาย้อนหลัง (แบบตาราง)<span class="sub">กรอกทีละหลายแถวแล้วบันทึกพร้อมกัน — นับเป็นวันเต็มวันเท่านั้น</span></h2>' +
+        '<div style="overflow-x:auto;">' +
+          '<table id="bulkGridTable"><thead><tr>' +
+            '<th style="min-width:150px;">บุคลากร</th>' +
+            '<th style="min-width:120px;">ประเภทลา</th>' +
+            '<th style="min-width:80px;">จำนวนวัน</th>' +
+            '<th style="min-width:130px;">วันเริ่มต้น</th>' +
+            '<th style="min-width:130px;">วันสิ้นสุด (อัตโนมัติ)</th>' +
+            '<th style="min-width:120px;">หมายเหตุ</th>' +
+            '<th></th>' +
+          '</tr></thead><tbody id="bulkGridBody"></tbody></table>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">' +
+          '<button type="button" class="btn-secondary" id="bulkAddRowBtn">+ เพิ่มแถว</button>' +
+          '<button type="button" class="btn-primary" id="bulkSaveBtn" style="width:auto;">บันทึกทั้งหมด</button>' +
+        '</div>' +
+        '<div id="bulkGridMsg" class="form-msg"></div>' +
+      '</div>'
+    );
+  }
+
+  function personOptionsHtml() {
+    return boot.persons.map(function (p) {
+      return '<option value="' + escapeHtml(p.personCode) + '">' + escapeHtml(p.displayName) + '</option>';
+    }).join('');
+  }
+
+  function leaveTypeOptionsHtml() {
+    return boot.leaveTypes.map(function (t) {
+      return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.nameTh) + '</option>';
+    }).join('');
+  }
+
+  function bulkRowHtml(rowId) {
+    return (
+      '<tr data-row-id="' + rowId + '">' +
+        '<td><select class="input bg-person"><option value="">— เลือก —</option>' + personOptionsHtml() + '</select></td>' +
+        '<td><select class="input bg-type">' + leaveTypeOptionsHtml() + '</select></td>' +
+        '<td><input class="input bg-qty" type="number" min="1" step="1" value="1"></td>' +
+        '<td><input class="input bg-start" type="date"></td>' +
+        '<td><input class="input bg-end" type="text" readonly placeholder="—" style="background:var(--track);"></td>' +
+        '<td><input class="input bg-note" type="text"></td>' +
+        '<td><button type="button" class="link-danger bg-remove">ลบ</button></td>' +
+      '</tr>'
+    );
+  }
+
+  function addBulkRow() {
+    bulkRowSeq++;
+    var tbody = document.getElementById('bulkGridBody');
+    tbody.insertAdjacentHTML('beforeend', bulkRowHtml(bulkRowSeq));
+    var tr = tbody.querySelector('tr[data-row-id="' + bulkRowSeq + '"]');
+    bindBulkRow(tr);
+  }
+
+  function bindBulkRow(tr) {
+    var qty = tr.querySelector('.bg-qty');
+    var start = tr.querySelector('.bg-start');
+    var end = tr.querySelector('.bg-end');
+    var remove = tr.querySelector('.bg-remove');
+    function recompute() {
+      end.value = computeEndDate(start.value, Number(qty.value));
+    }
+    qty.addEventListener('input', recompute);
+    start.addEventListener('change', recompute);
+    remove.addEventListener('click', function () { tr.remove(); });
+  }
+
+  function computeEndDate(startDateStr, quantityDays) {
+    if (!startDateStr || !quantityDays || quantityDays < 1) return '';
+    var parts = startDateStr.split('-');
+    if (parts.length !== 3) return '';
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    d.setDate(d.getDate() + (Math.floor(quantityDays) - 1));
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var dd = String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + mm + '-' + dd;
+  }
+
+  function bindBulkGrid() {
+    document.getElementById('bulkAddRowBtn').addEventListener('click', addBulkRow);
+    document.getElementById('bulkSaveBtn').addEventListener('click', submitBulkGrid);
+    addBulkRow();
+    addBulkRow();
+    addBulkRow();
+  }
+
+  function submitBulkGrid() {
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#bulkGridBody tr'));
+    var msg = document.getElementById('bulkGridMsg');
+    var btn = document.getElementById('bulkSaveBtn');
+    var jobs = [];
+
+    rows.forEach(function (tr) {
+      var personCode = tr.querySelector('.bg-person').value;
+      var leaveTypeId = tr.querySelector('.bg-type').value;
+      var qty = Number(tr.querySelector('.bg-qty').value);
+      var startDate = tr.querySelector('.bg-start').value;
+      var endDate = tr.querySelector('.bg-end').value;
+      var note = tr.querySelector('.bg-note').value;
+      var isBlank = !personCode && !startDate;
+      if (isBlank) return; // แถวว่าง ข้ามไปเงียบ ๆ
+      jobs.push({ tr: tr, personCode: personCode, leaveTypeId: leaveTypeId, qty: qty, startDate: startDate, endDate: endDate, note: note });
+    });
+
+    if (!jobs.length) {
+      msg.className = 'form-msg error';
+      msg.textContent = 'ยังไม่มีแถวที่กรอกข้อมูลครบ';
+      return;
+    }
+
+    btn.disabled = true;
+    var okCount = 0, failCount = 0, idx = 0;
+
+    function next() {
+      if (idx >= jobs.length) {
+        btn.disabled = false;
+        msg.className = failCount ? 'form-msg error' : 'form-msg ok';
+        msg.textContent = 'บันทึกสำเร็จ ' + okCount + ' แถว' + (failCount ? (' / ล้มเหลว ' + failCount + ' แถว') : '');
+        if (selectedPersonCode) { refreshEntries(); refreshBalances(); }
+        return;
+      }
+      var job = jobs[idx];
+      msg.className = 'form-msg';
+      msg.textContent = 'กำลังบันทึก ' + (idx + 1) + '/' + jobs.length + ' ...';
+
+      if (!job.personCode || !job.startDate || !job.endDate || !job.qty || job.qty < 1) {
+        markBulkRow(job.tr, false, 'กรอกข้อมูลไม่ครบ');
+        failCount++;
+        idx++;
+        next();
+        return;
+      }
+
+      callApi('adminAddLedgerEntry', {
+        personCode: job.personCode,
+        leaveTypeId: job.leaveTypeId,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        dayPart: 'FULL',
+        note: job.note
+      }).then(function (res) {
+        if (res.ok) { markBulkRow(job.tr, true, ''); okCount++; }
+        else { markBulkRow(job.tr, false, addEntryErrorMessage(res.reason)); failCount++; }
+        idx++;
+        next();
+      }).catch(function (err) {
+        markBulkRow(job.tr, false, err && err.message ? err.message : 'error');
+        failCount++;
+        idx++;
+        next();
+      });
+    }
+    next();
+  }
+
+  function markBulkRow(tr, success, reasonText) {
+    tr.style.background = success ? 'rgba(12,163,12,0.08)' : 'rgba(208,59,59,0.08)';
+    if (success) {
+      tr.querySelectorAll('select, input').forEach(function (el) { el.disabled = true; });
+    } else if (reasonText) {
+      var noteCell = tr.querySelector('.bg-note');
+      noteCell.title = reasonText;
+      noteCell.style.borderColor = 'var(--critical)';
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // ยกยอดวันลาพักผ่อนขึ้นปีงบประมาณใหม่
+  // ---------------------------------------------------------------
+
+  function rolloverYearOptions() {
+    var y = boot.defaultFiscalYear;
+    var opts = [];
+    for (var yr = y - 2; yr <= y + 1; yr++) opts.push(yr);
+    return opts;
+  }
+
+  function renderRolloverCard() {
+    var yearOpts = rolloverYearOptions();
+    var y = boot.defaultFiscalYear;
+    function opts(selected) {
+      return yearOpts.map(function (yr) {
+        return '<option value="' + yr + '"' + (yr === selected ? ' selected' : '') + '>' + yr + '</option>';
+      }).join('');
+    }
+    return (
+      '<div class="card">' +
+        '<h2>ยกยอดวันลาพักผ่อนขึ้นปีงบประมาณใหม่<span class="sub">ยกวันคงเหลือปีเดิมมาเป็นวันยกมา แล้วบวกสิทธิใหม่ให้อัตโนมัติ</span></h2>' +
+        '<form id="rolloverForm" class="form-grid">' +
+          '<div class="form-row-2">' +
+            '<div class="form-group"><label>จากปีงบประมาณ</label><select name="fromYear">' + opts(y - 1) + '</select></div>' +
+            '<div class="form-group"><label>ไปปีงบประมาณ</label><select name="toYear">' + opts(y) + '</select></div>' +
+          '</div>' +
+          '<div class="form-row-2">' +
+            '<div class="form-group"><label>สิทธิเพิ่มต่อปี (วัน)</label><input class="input" type="number" step="0.5" min="0" name="entitlementDays" value="10"></div>' +
+            '<div class="form-group"><label>ขอบเขต</label>' +
+              '<div class="radio-group" style="margin-top:8px;">' +
+                '<label><input type="radio" name="scope" value="all" checked> ทุกคน (สถานะ ACTIVE)</label>' +
+                '<label><input type="radio" name="scope" value="selected"> เฉพาะบุคลากรที่เลือกไว้ด้านบน</label>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="form-group"><label><input type="checkbox" name="overwrite"> เขียนทับข้อมูลเดิมถ้ามีอยู่แล้วในปีปลายทาง</label></div>' +
+          '<button type="submit" class="btn-primary">ยกยอด</button>' +
+          '<div id="rolloverMsg" class="form-msg"></div>' +
+        '</form>' +
+        '<div id="rolloverResults"></div>' +
+      '</div>'
+    );
+  }
+
+  function bindRolloverForm() {
+    var form = document.getElementById('rolloverForm');
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var fd = new FormData(form);
+      var scope = fd.get('scope');
+      var fromYear = fd.get('fromYear');
+      var toYear = fd.get('toYear');
+      var msg = document.getElementById('rolloverMsg');
+      var resultsEl = document.getElementById('rolloverResults');
+
+      if (fromYear === toYear) {
+        msg.className = 'form-msg error';
+        msg.textContent = 'ปีต้นทางและปีปลายทางต้องไม่ใช่ปีเดียวกัน';
+        return;
+      }
+      if (scope === 'selected' && !selectedPersonCode) {
+        msg.className = 'form-msg error';
+        msg.textContent = 'กรุณาเลือกบุคลากรที่ตัวเลือก "เลือกบุคลากร" ด้านบนก่อน';
+        return;
+      }
+      var confirmMsg = scope === 'all'
+        ? ('ยืนยันยกยอดวันลาพักผ่อนจากปี ' + fromYear + ' ไปปี ' + toYear + ' ให้บุคลากรทุกคนที่ยัง ACTIVE?')
+        : ('ยืนยันยกยอดวันลาพักผ่อนจากปี ' + fromYear + ' ไปปี ' + toYear + ' สำหรับบุคลากรที่เลือกไว้?');
+      if (!confirm(confirmMsg)) return;
+
+      var btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      msg.className = 'form-msg';
+      msg.textContent = 'กำลังประมวลผล...';
+      resultsEl.innerHTML = '';
+
+      callApi('adminRolloverAnnualLeave', {
+        fromFiscalYear: fromYear,
+        toFiscalYear: toYear,
+        entitlementDays: fd.get('entitlementDays'),
+        overwrite: fd.get('overwrite') === 'on',
+        scope: scope,
+        personCode: selectedPersonCode
+      }).then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          msg.className = 'form-msg error';
+          msg.textContent = 'ยกยอดไม่สำเร็จ: ' + (res.reason || '');
+          return;
+        }
+        msg.className = 'form-msg ok';
+        msg.textContent = 'ดำเนินการแล้ว ' + res.processed + ' คน (ข้าม ' + res.skipped + ' คน)';
+        resultsEl.innerHTML = renderRolloverResults(res.results);
+      }).catch(function (err) {
+        btn.disabled = false;
+        msg.className = 'form-msg error';
+        msg.textContent = 'เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : String(err));
+      });
+    });
+  }
+
+  function renderRolloverResults(results) {
+    if (!results || !results.length) return '';
+    var rows = results.map(function (r) {
+      if (r.status === 'skipped') {
+        return '<div class="admin-row"><div class="main"><div class="t1">' + escapeHtml(r.displayName) + '</div>' +
+          '<div class="t2">ข้าม — ' + escapeHtml(r.reason || '') + '</div></div></div>';
+      }
+      return (
+        '<div class="admin-row"><div class="main"><div class="t1">' + escapeHtml(r.displayName) + '</div>' +
+          '<div class="t2">คงเหลือเดิม ' + fmtNum(r.prevRemaining) + ' &rarr; ยกมา ' + fmtNum(r.newCarryover) +
+          ' + สิทธิใหม่ ' + fmtNum(r.newEntitlement) + ' = ' + fmtNum(r.newAvailable) + ' วัน</div></div>' +
+          '<div class="side">' + (r.status === 'created' ? 'สร้างใหม่' : 'อัปเดต') + '</div></div>'
+      );
+    }).join('');
+    return '<div style="margin-top:10px; max-height:320px; overflow-y:auto;">' + rows + '</div>';
   }
 
   // ---------------------------------------------------------------
